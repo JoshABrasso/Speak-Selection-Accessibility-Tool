@@ -1,0 +1,23 @@
+# Build artifacts — rebuild with `pyinstaller` + the Installer/ build step
+build/
+dist/
+__pycache__/
+*.pyc
+
+# Python virtual environment
+venv/
+
+# The Kokoro voice model (~353MB) — too large for a git repo, downloaded at
+# build time instead. See README "Building from source".
+models/*.onnx
+models/*.bin
+
+# The built installer — distributed as a GitHub Release asset, not committed
+Installer/*.msi
+Installer/*.wixpdb
+Installer/install.log
+
+# Runtime data (this lives in %APPDATA%, never in the project folder —
+# excluded here only in case a dev run ever writes one locally)
+settings.json
+speak_selected.log

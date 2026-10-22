@@ -1,0 +1,49 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Speak Selected"
+           Manufacturer="Josh"
+           Version="1.0.0"
+           UpgradeCode="f4848f10-d825-41e1-8999-9c9e8e0722be"
+           Scope="perUser">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Speak Selected is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="AppIcon.ico" SourceFile="$(var.PayloadDir)\app.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="APPFOLDER" Name="SpeakSelected">
+          <Component Id="AutoStartRegistry" Guid="2c9b9e6b-8a3e-4a3a-8e3b-7f3b5a1e9d11">
+            <RegistryValue Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                           Name="SpeakSelected" Type="string"
+                           Value="&quot;[APPFOLDER]SpeakSelected.exe&quot;" KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <ComponentGroup Id="PayloadFiles" Directory="APPFOLDER">
+      <Files Include="$(var.PayloadDir)\**" />
+    </ComponentGroup>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut" Directory="ProgramMenuFolder" Guid="7e2a1f4c-9b6d-4e2a-8c1f-3d9a6b2e4f17">
+        <Shortcut Id="SpeakSelectedShortcut" Name="Speak Selected"
+                  Target="[APPFOLDER]SpeakSelected.exe" WorkingDirectory="APPFOLDER"
+                  Icon="AppIcon.ico" />
+        <RemoveFolder Id="RemoveProgramMenuFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\SpeakSelected" Name="installed"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="Main">
+      <ComponentRef Id="AutoStartRegistry" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentGroupRef Id="PayloadFiles" />
+    </Feature>
+
+  </Package>
+</Wix>
