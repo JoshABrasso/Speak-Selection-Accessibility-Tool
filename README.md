@@ -100,13 +100,17 @@ because almost everything that lets you select text also lets you copy it.
 
 ## Install
 
-1. Go to [Releases](../../releases) and download `SpeakSelected.msi`.
-2. Run it. No administrator rights needed, nothing else to install first — it's fully
-   self-contained.
-3. Windows may show a blue "Windows protected your PC" screen the first time. This happens to
+**[⬇ Download SpeakSelectedSetup.exe](https://github.com/JoshABrasso/Speak-Selection-Accessibility-Tool/releases/latest/download/SpeakSelectedSetup.exe)**
+— always grabs the latest release.
+
+1. Run it — a normal installer wizard, same as any other Windows app. No administrator rights
+   needed, nothing else to install first — it's fully self-contained. (The raw
+   [`SpeakSelected.msi`](../../releases) is also available on the [Releases](../../releases)
+   page, if you specifically want that instead.)
+2. Windows may show a blue "Windows protected your PC" screen the first time. This happens to
    independently-published software without an expensive commercial code-signing certificate
    — it is not a sign anything is wrong. Click **More info**, then **Run anyway**.
-4. A short welcome screen explains the shortcuts. You're done — no setup, no accounts, no
+3. A short welcome screen explains the shortcuts. You're done — no setup, no accounts, no
    configuration required to start using it immediately.
 
 ## Using it
