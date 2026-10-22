@@ -59,6 +59,11 @@ system-wide "read this to me" button on Windows that isn't locked to one applica
 - A native-styled, draggable floating panel that remembers where you put it, and opens
   Settings right next to wherever it is — not at some arbitrary spot across a second monitor.
 
+<p align="center">
+  <img src="screenshots/panel.png" alt="The floating playback panel while speaking" width="420"><br>
+  <img src="screenshots/settings.png" alt="The Settings window, General tab" width="480">
+</p>
+
 ## How it works
 
 When you press the shortcut, Speak Selected simulates a copy command, reads what lands on the
