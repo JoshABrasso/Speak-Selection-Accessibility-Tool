@@ -1,0 +1,28 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
+
+  <!-- Wraps SpeakSelected.msi in a single branded Setup.exe — the same
+       thing every real consumer Windows app (Discord, Chrome, VS Code,
+       Spotify...) presents to users, instead of handing them a bare .msi
+       to double-click, which far fewer non-technical users have ever
+       directly run. The MSI itself is unchanged; this is purely the
+       install experience wrapped around it. -->
+  <Bundle Name="Speak Selected"
+          Version="1.0.1"
+          Manufacturer="Josh"
+          UpgradeCode="27fdd4a1-fb58-4ba7-ac43-088522e815e2"
+          IconSourceFile="..\app.ico">
+
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication
+        Theme="hyperlinkLicense"
+        LicenseUrl=""
+        LogoFile="bootstrapper_logo.png" />
+    </BootstrapperApplication>
+
+    <Chain>
+      <MsiPackage SourceFile="SpeakSelected.msi" />
+    </Chain>
+
+  </Bundle>
+</Wix>

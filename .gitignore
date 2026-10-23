@@ -15,7 +15,12 @@ models/*.bin
 # The built installer — distributed as a GitHub Release asset, not committed
 Installer/*.msi
 Installer/*.wixpdb
+Installer/*.exe
 Installer/install.log
+
+# Internal working/debugging notes kept for picking this project back up
+# later — not for a public audience, stays in the local dev folder only
+research-speak-selected.md
 
 # Runtime data (this lives in %APPDATA%, never in the project folder —
 # excluded here only in case a dev run ever writes one locally)

@@ -13,6 +13,7 @@ layer, never required to actually use the tool.
 
 import ctypes
 import ctypes.wintypes
+import faulthandler
 import re
 import socket
 import sys
@@ -27,8 +28,10 @@ import win32con
 import win32api
 
 from kokoro_onnx import Kokoro
+from kokoro_onnx.chunker import pause_after as _kokoro_pause_after
 
 import app_paths
+import autostart
 import settings as settings_module
 import tts_sapi
 from tray import TrayIcon
@@ -56,6 +59,20 @@ def _log_unhandled_exception(exc_type, exc_value, exc_tb) -> None:
 
 sys.excepthook = _log_unhandled_exception
 threading.excepthook = lambda args: _log_unhandled_exception(args.exc_type, args.exc_value, args.exc_traceback)
+
+# sys.excepthook only ever sees genuine Python exceptions — a real native
+# fault (a hard crash inside Tcl/Tk, onnxruntime, pywin32/COM, or any other
+# C extension) bypasses it completely, taking the whole process down with
+# zero trace: no Python exception, and no Windows Error Reporting record
+# either, by deliberate privacy choice on this machine. faulthandler is a
+# distinct, lower-level CPython mechanism that installs its own fault
+# handler and writes a real stack trace to this file the instant such a
+# crash happens — confirmed working via a real deliberate test crash
+# before trusting it, not assumed: it's the one piece of evidence that
+# doesn't depend on WER or on the crash being a well-behaved exception.
+_crash_log_path = app_paths.data_dir() / "crash_trace.log"
+_crash_log_file = open(_crash_log_path, "a", encoding="utf-8", buffering=1)
+faulthandler.enable(file=_crash_log_file, all_threads=True)
 
 MODEL_DIR = app_paths.app_dir() / "models"
 
@@ -105,13 +122,20 @@ def claim_single_instance_or_signal_running() -> bool:
 
 def _start_single_instance_listener() -> None:
     def _serve() -> None:
-        try:
-            while True:
+        while True:
+            try:
                 conn, _ = _single_instance_socket.accept()
                 conn.close()
                 ui.open_settings()
-        except Exception as exc:
-            print(f"Single-instance listener stopped: {exc}")
+            except OSError:
+                # The listening socket itself is gone (process shutting
+                # down) — nothing left to serve.
+                return
+            except Exception as exc:
+                # One bad connection attempt used to take the whole loop
+                # down silently — accept() stays armed for every connection
+                # after it, not just the first.
+                print(f"Single-instance listener: error handling a connection: {exc}")
 
     threading.Thread(target=_serve, daemon=True).start()
 
@@ -139,20 +163,64 @@ def register_all_hotkeys() -> list[str]:
     return failed
 
 
+# Confirmed via Microsoft's own RegisterHotKey documentation: a hotkey
+# registered with hWnd=NULL is tied to the *calling thread's own* message
+# queue, not the process as a whole. try_rebind_hotkey() is invoked from
+# the Tk UI thread (Settings' "Change" button), but the actual WM_HOTKEY
+# dispatch loop runs on the main thread — calling UnregisterHotKey/
+# RegisterHotKey directly from the Tk thread would register the new combo
+# to a message queue nothing ever reads, leaving it permanently dead while
+# the old combo silently kept working, until the app was restarted. This
+# custom message marshals the real Win32 calls onto the main thread
+# (see _handle_rebind_hotkey_request in the message loop below), and the
+# Tk thread blocks briefly on the response — safe, since it's the Tk
+# thread blocking, not the message loop itself.
+WM_REBIND_HOTKEY = 0x8000 + 1  # WM_APP + 1, a private application message
+_rebind_lock = threading.Lock()
+_rebind_request: dict = {}
+_rebind_response_event = threading.Event()
+
+
 def try_rebind_hotkey(action: str, mods: int, vk: int) -> bool:
-    """Live rebind, not just a settings write — unregisters the action's
-    current shortcut, tries to claim the new one, and rolls back to the old
-    one if the new combo turns out to already be taken by something else.
-    Returns whether the new shortcut was actually applied."""
+    """Called from the Tk UI thread. Returns whether the new shortcut was
+    actually applied, after the main thread has handled the real
+    registration — see _handle_rebind_hotkey_request for the rollback-on-
+    conflict behaviour."""
+    with _rebind_lock:
+        _rebind_response_event.clear()
+        _rebind_request.clear()
+        _rebind_request.update(action=action, mods=mods, vk=vk)
+    if not user32.PostThreadMessageW(main_thread_id, WM_REBIND_HOTKEY, 0, 0):
+        return False  # main thread's queue is gone (shutting down) — nothing to do
+    # A 2s timeout so a stuck main thread can never hang the Settings UI
+    # forever — this should always resolve almost instantly in practice.
+    _rebind_response_event.wait(timeout=2.0)
+    with _rebind_lock:
+        return bool(_rebind_request.get("result"))
+
+
+def _handle_rebind_hotkey_request() -> None:
+    """Runs on the main thread in response to WM_REBIND_HOTKEY — the real
+    UnregisterHotKey/RegisterHotKey calls now correctly happen on the same
+    thread that owns every hotkey registration, and rolls back to the old
+    combo if the new one turns out to already be taken by something else."""
+    with _rebind_lock:
+        action = _rebind_request["action"]
+        mods = _rebind_request["mods"]
+        vk = _rebind_request["vk"]
     action_id = ACTION_IDS[action]
     old_mods, old_vk = current_settings["hotkeys"][action]
     user32.UnregisterHotKey(None, action_id)
+    applied = False
     if user32.RegisterHotKey(None, action_id, mods, vk):
         current_settings["hotkeys"][action] = [mods, vk]
         settings_module.save(current_settings)
-        return True
-    user32.RegisterHotKey(None, action_id, old_mods, old_vk)  # restore — never leave it unbound
-    return False
+        applied = True
+    else:
+        user32.RegisterHotKey(None, action_id, old_mods, old_vk)  # restore — never leave it unbound
+    with _rebind_lock:
+        _rebind_request["result"] = applied
+    _rebind_response_event.set()
 
 
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
@@ -175,6 +243,7 @@ playback_state = {"sentences": [], "index": 0}
 
 kokoro: Kokoro | None
 ui: UIController
+main_thread_id: int
 
 
 def active_engine() -> str:
@@ -283,9 +352,84 @@ def capture_selected_text(timeout: float = 0.3) -> str:
     return captured
 
 
+CLAUSE_SPLIT_RE = re.compile(r"(?<=[,;:])\s+")
+
+
+def _split_long_chunk(text: str, max_len: int) -> list[str]:
+    """Break one over-long chunk into pieces of at most `max_len` chars,
+    least-disruptive boundary first — same preference order as kokoro's own
+    internal chunker: newline (keeps list items/lines intact), then clause
+    punctuation (a comma/semicolon/colon split still sounds like a natural
+    pause), then word boundaries so a piece never cuts a word in half."""
+    if len(text) <= max_len:
+        return [text]
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) > 1:
+        pieces = []
+        for line in lines:
+            pieces.extend(_split_long_chunk(line, max_len))
+        return pieces
+
+    clauses = [c.strip() for c in CLAUSE_SPLIT_RE.split(text) if c.strip()]
+    if len(clauses) > 1:
+        pieces = []
+        for clause in clauses:
+            pieces.extend(_split_long_chunk(clause, max_len))
+        return pieces
+
+    words = text.split()
+    pieces, current = [], ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if len(candidate) > max_len and current:
+            pieces.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        pieces.append(current)
+    return pieces
+
+
 def split_sentences(text: str) -> list[str]:
+    """Plain per-sentence split — this is what actually gets spoken, and it
+    already sounds natural (each sentence keeps its own punctuation, its
+    own pacing), so it's left alone. See _bound_first_chunk below for the
+    one real problem this had: only the very first chunk's synthesis time
+    is ever perceptible as a delay before speech starts at all — every
+    sentence after it synthesizes in the background while something
+    earlier is already playing, so it was never worth touching."""
     sentences = [s.strip() for s in SENTENCE_SPLIT_RE.split(text) if s.strip()]
     return sentences or [text.strip()]
+
+
+# Measured directly: a first sentence that's either very long (a run-on
+# block with no punctuation for a long stretch — a bullet list, say) or
+# very short (a couple of words) both made kokoro noticeably slow to
+# produce that first bit of audio — the long case from sheer synthesis
+# time, the short case from an artifact in how kokoro picks its voice style
+# by utterance length. Bound only this one position; everything else in
+# the sentence list is untouched.
+MAX_FIRST_CHUNK_CHARS = 200
+MIN_FIRST_CHUNK_CHARS = 50
+
+
+def _bound_first_chunk(sentences: list[str]) -> list[str]:
+    if not sentences:
+        return sentences
+    first, rest = sentences[0], sentences[1:]
+
+    if len(first) > MAX_FIRST_CHUNK_CHARS:
+        return _split_long_chunk(first, MAX_FIRST_CHUNK_CHARS) + rest
+
+    if len(first) < MIN_FIRST_CHUNK_CHARS and rest:
+        merged = f"{first} {rest[0]}"
+        if len(merged) > MAX_FIRST_CHUNK_CHARS:
+            return _split_long_chunk(merged, MAX_FIRST_CHUNK_CHARS) + rest[1:]
+        return [merged] + rest[1:]
+
+    return sentences
 
 
 def _synthesize(text: str, lang: str | None = None) -> tuple:
@@ -371,6 +515,21 @@ def playback_worker(generation: int) -> None:
             with generation_lock:
                 if generation != current_generation:
                     return
+
+            # A chunk _bound_first_chunk force-split off a too-long first
+            # sentence (not a real sentence break) got no pause baked into
+            # its own audio the way a genuine sentence end would from
+            # kokoro's own batching — so it would otherwise play back-to
+            # -back with zero gap, sounding rushed or run-together. Add
+            # back only the clause-length pause kokoro itself would have
+            # inserted there; a true sentence end is left as-is (existing,
+            # already-fine behavior), and a raw word-boundary cut gets no
+            # added pause either, since that's mid-thought and continuity
+            # matters more than a pause there.
+            if next_index < len(sentences):
+                gap = _kokoro_pause_after(sentences[index], sentence=0.0, clause=0.1)
+                if gap:
+                    time.sleep(gap)
 
             if prefetch_thread is not None:
                 prefetch_thread.join()
@@ -458,7 +617,7 @@ def handle_speak() -> None:
         print(f"No text selected. (capture: {t1 - t0:.2f}s)")
         return
 
-    sentences = split_sentences(text)
+    sentences = _bound_first_chunk(split_sentences(text))
     print(f"Speaking ({len(sentences)} sentence(s), capture: {t1 - t0:.2f}s): "
           f"{text[:80]}{'...' if len(text) > 80 else ''}")
 
@@ -642,7 +801,7 @@ ACTION_HANDLERS = {
 
 
 def main() -> None:
-    global kokoro, ui
+    global kokoro, ui, main_thread_id
 
     # Without this, Windows has no distinct identity for the process and
     # falls back to grouping/labelling it as whatever the Python interpreter
@@ -739,6 +898,11 @@ def main() -> None:
         ui.show_onboarding()
         current_settings["onboarding_shown"] = True
         settings_module.save(current_settings)
+        # Default to on for a fresh install, same as before — but set by the
+        # app itself, once, rather than by the installer (see the WXS for
+        # why: a user's later "turn this off" in Settings needs to actually
+        # stick, including across a version upgrade).
+        autostart.set_enabled(True)
     elif failed_actions:
         names = ", ".join(settings_module.ACTION_LABELS[a] for a in failed_actions)
         ui.show_osd(f"⚠ Some shortcuts are already used by another app: {names}. "
@@ -768,6 +932,19 @@ def main() -> None:
                     traceback.print_exc()
                     ui.show_osd(f"⚠ {settings_module.ACTION_LABELS.get(action, action)} hit an "
                                 f"error and didn't complete. Check the log if this keeps happening.")
+            elif msg.message == WM_REBIND_HOTKEY:
+                try:
+                    _handle_rebind_hotkey_request()
+                except Exception as exc:
+                    print(f"Error handling hotkey rebind request: {exc}")
+                    traceback.print_exc()
+                    # The Tk thread is blocked waiting on this — it must
+                    # always be released, even when the rebind itself blew
+                    # up, or Settings would hang for up to the 2s timeout
+                    # instead of failing cleanly.
+                    with _rebind_lock:
+                        _rebind_request["result"] = False
+                    _rebind_response_event.set()
     finally:
         for action_id in ACTION_IDS.values():
             user32.UnregisterHotKey(None, action_id)

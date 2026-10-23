@@ -23,16 +23,29 @@ SAMPLE_RATE = 24000
 
 SVSFDefault = 0
 
+_voices_cache: list[tuple[str, str]] | None = None
+
 
 def list_voices() -> list[tuple[str, str]]:
     """Every SAPI voice actually installed on this machine, as
     (id, display_name) pairs — varies by Windows install/language packs,
-    unlike Kokoro's fixed bundled set, so this is read live, not assumed."""
+    unlike Kokoro's fixed bundled set, so this is read live, not assumed —
+    but only once per process. The Settings UI calls this synchronously
+    from the Tk thread every time it opens while SAPI is active; without
+    caching, that's a live COM round-trip blocking the entire UI thread on
+    every single open, and if SAPI/COM ever has a transient hiccup, the
+    whole app would appear frozen, not just slow. Installed voices don't
+    change mid-session in any normal use, so one real query per run is
+    correct, not a staleness risk."""
+    global _voices_cache
+    if _voices_cache is not None:
+        return _voices_cache
     pythoncom.CoInitialize()
     try:
         sp_voice = win32com.client.Dispatch("SAPI.SpVoice")
         voices = [(token.Id, token.GetDescription()) for token in sp_voice.GetVoices()]
         sp_voice = None  # release before CoUninitialize — see synthesize()
+        _voices_cache = voices
         return voices
     finally:
         pythoncom.CoUninitialize()

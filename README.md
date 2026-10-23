@@ -155,7 +155,7 @@ Or build the standalone installer:
 venv\Scripts\python -m PyInstaller --name SpeakSelected --onedir --windowed --icon app.ico ^
   --collect-all kokoro_onnx --collect-all onnxruntime --collect-all phonemizer ^
   --collect-all espeakng_loader --collect-all sounddevice --collect-all pystray ^
-  --hidden-import win32timezone speak_selected.py
+  --hidden-import win32timezone --clean speak_selected.py
 
 :: copy models\*.onnx, models\*.bin, and app.ico into dist\SpeakSelected\ first
 
